@@ -29,8 +29,6 @@ Usage (arguments in [] are optional):
 
 #define FRAME_WIDTH_DEFAULT 640
 #define FRAME_HEIGHT_DEFAULT 480
-#define DISPLAY_WIDTH_DEFAULT 1280
-#define DISPLAY_HEIGHT_DEFAULT 1024
 
 pid_t pid1, pid2;
 int pipe1[2], pipe2[2];
@@ -104,8 +102,6 @@ int grab()
 
     while (1)
     {
-        printf("Copying...\n");
-        // lseek(file_src, 0, SEEK_SET);
         num_bytes_read = read(file_src, buff, block_size);
         if (num_bytes_read == -1)
         {
@@ -190,7 +186,6 @@ int transform()
             }
         }
 
-        printf("Transforming...\n");
         // Transform and copy input image to display buffer and create borders
         unsigned long j = 0; // Image pointer
         for (unsigned long i = 0; i < (unsigned long)(display_width * display_height); i++)
@@ -291,8 +286,6 @@ int display()
 
     while (1)
     {
-        printf("Displaying...\n");
-        // ssize_t totalBytesRead = 0;
         for (int i = 0; i < display_size - 1; i += display_width * 2)
         {
             ssize_t blockRead = read(pipe2[0], &disp_buff[i], display_width * 2);
@@ -326,7 +319,6 @@ void getDisplayDimensions(unsigned int *p_display_width, unsigned int *p_display
     int fbfd = 0; // framebuffer filedescriptor
     struct fb_var_screeninfo var_info;
 
-    printf("Getting display dimensions...\n");
     // Open the framebuffer device file for reading and writing
     fbfd = open("/dev/fb0", O_RDWR);
     if (fbfd == -1)
@@ -341,9 +333,6 @@ void getDisplayDimensions(unsigned int *p_display_width, unsigned int *p_display
         printf("Error reading variable screen info.\n");
         exit(1);
     }
-    printf("Display info %dx%d, %d bpp\n",
-           var_info.xres, var_info.yres,
-           var_info.bits_per_pixel);
 
     *p_display_width = var_info.xres;
     *p_display_height = var_info.yres;
