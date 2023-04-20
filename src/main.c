@@ -1,3 +1,12 @@
+/*
+
+Creates three processes, which take video feed from /dev/video0, transform it from RGB888 to RGB565 and feed it to screen buffer /dev/fb0.
+
+Usage (arguments in [] are optional):
+./pipe [display_width] [display_height]
+
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -10,20 +19,30 @@
 #include <stdbool.h>
 #include <limits.h>
 
+// For determining display size
+#include <string.h>
+#include <linux/fb.h>
+#include <sys/mman.h>
+#include <sys/fcntl.h>
+#include <sys/ioctl.h>
+
+
 #define FRAME_WIDTH_DEFAULT 640
 #define FRAME_HEIGHT_DEFAULT 480
-#define DISPLAY_WIDTH_DEFAULT 1280
-#define DISPLAY_HEIGHT_DEFAULT 1024
 
 pid_t pid1, pid2;
 int pipe1[2], pipe2[2];
 int a, b;
+
 int grab();
 int transform();
 int display();
+void getDisplayDimensions(int *p_display_width, int *p_display_height);
 
 int main(int argc, char *argv[])
 {
+    // Check for input parameters
+
     a = pipe(pipe1);
     b = pipe(pipe2);
     pid1 = fork();
@@ -38,18 +57,16 @@ int main(int argc, char *argv[])
         if (pid2 == 0)
         {
             transform();
-            // sleep(10);
         }
         else
         {
             display();
-            //sleep(10);
         }
     }
     exit(0);
 }
 
-// Grab //////////////////////////////////////////////////
+// Grab //////////////////////////////////////////////////////
 int grab()
 {
 
@@ -85,8 +102,6 @@ int grab()
 
     while (1)
     {
-        printf("Copying...\n");
-        // lseek(file_src, 0, SEEK_SET);
         num_bytes_read = read(file_src, buff, block_size);
         if (num_bytes_read == -1)
         {
@@ -105,7 +120,6 @@ int grab()
                 exit(5);
             }
         }
-
     }
 
     free(buff);
@@ -120,7 +134,7 @@ int grab()
     exit(0);
 }
 
-/////////////////////////////////////////////////////
+// Transform /////////////////////////////////////////////////
 int transform()
 {
     // File descriptors (file offset & status flags)
@@ -138,21 +152,12 @@ int transform()
     char r, g, b;
     unsigned short short_px;
 
-    // ssize_t num_bytes_read;
-    // ssize_t num_bytes_written;
-
-    // // Check for number of arguments
-    // if (argc != 3)
-    // {
-    //     printf("Usage: transform src_file dest_file\n");
-    //     exit(1);
-    // }
-
-    // use default frame and display dimensions
+    // use default frame dimensions
     frame_width = FRAME_WIDTH_DEFAULT;
     frame_height = FRAME_HEIGHT_DEFAULT;
-    display_width = DISPLAY_WIDTH_DEFAULT;
-    display_height = DISPLAY_HEIGHT_DEFAULT;
+
+    // Get display dimensions
+    getDisplayDimensions(&display_width, &display_height);
 
     // Allocate display buffer
     display_size = display_width * display_height * 2; // *2, ker je 16bpp
@@ -181,7 +186,6 @@ int transform()
             }
         }
 
-        printf("Transforming...\n");
         // Transform and copy input image to display buffer and create borders
         unsigned long j = 0; // Image pointer
         for (unsigned long i = 0; i < (unsigned long)(display_width * display_height); i++)
@@ -243,7 +247,7 @@ int transform()
     }
 }
 
-/////////////////////////////////////////////////////
+// Display ///////////////////////////////////////////////////
 int display()
 {
 
@@ -261,8 +265,9 @@ int display()
     unsigned long frame_size;
     ssize_t num_bytes_read, num_bytes_written;
 
-    display_width = DISPLAY_WIDTH_DEFAULT;
-    display_height = DISPLAY_HEIGHT_DEFAULT;
+    // Get display dimensions
+    getDisplayDimensions(&display_width, &display_height);
+
     // Open destination file
     file_dest = open("/dev/fb0", O_RDWR);
     if (file_dest == -1)
@@ -281,8 +286,6 @@ int display()
 
     while (1)
     {
-        printf("Displaying...\n");
-        // ssize_t totalBytesRead = 0;
         for (int i = 0; i < display_size - 1; i += display_width * 2)
         {
             ssize_t blockRead = read(pipe2[0], &disp_buff[i], display_width * 2);
@@ -308,4 +311,33 @@ int display()
             }
         }
     }
+}
+
+// Other functions ///////////////////////////////////////////
+void getDisplayDimensions(int *p_display_width, int *p_display_height)
+{
+    int fbfd = 0; // framebuffer filedescriptor
+    struct fb_var_screeninfo var_info;
+
+    // Open the framebuffer device file for reading and writing
+    fbfd = open("/dev/fb0", O_RDWR);
+    if (fbfd == -1)
+    {
+        printf("Error: cannot open framebuffer device.\n");
+        exit(1);
+    }
+
+    // Get variable screen information
+    if (ioctl(fbfd, FBIOGET_VSCREENINFO, &var_info))
+    {
+        printf("Error reading variable screen info.\n");
+        exit(1);
+    }
+
+    *p_display_width = (int)(var_info.xres);
+    *p_display_height = (int)(var_info.yres);
+
+    // close file
+    close(fbfd);
+    return;
 }
