@@ -37,7 +37,7 @@ int a, b;
 int grab();
 int transform();
 int display();
-void getDisplayDimensions(unsigned int *p_display_width, unsigned int *p_display_height);
+void getDisplayDimensions(int *p_display_width, int *p_display_height);
 
 int main(int argc, char *argv[])
 {
@@ -314,7 +314,7 @@ int display()
 }
 
 // Other functions ///////////////////////////////////////////
-void getDisplayDimensions(unsigned int *p_display_width, unsigned int *p_display_height)
+void getDisplayDimensions(int *p_display_width, int *p_display_height)
 {
     int fbfd = 0; // framebuffer filedescriptor
     struct fb_var_screeninfo var_info;
@@ -334,8 +334,8 @@ void getDisplayDimensions(unsigned int *p_display_width, unsigned int *p_display
         exit(1);
     }
 
-    *p_display_width = var_info.xres;
-    *p_display_height = var_info.yres;
+    *p_display_width = (int)(var_info.xres);
+    *p_display_height = (int)(var_info.yres);
 
     // close file
     close(fbfd);
