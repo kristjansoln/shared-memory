@@ -26,13 +26,12 @@ Usage (arguments in [] are optional):
 #include <sys/fcntl.h>
 #include <sys/ioctl.h>
 
-
 #define FRAME_WIDTH_DEFAULT 640
 #define FRAME_HEIGHT_DEFAULT 480
 
 pid_t pid1, pid2;
-int pipe1[2], pipe2[2];
-int a, b;
+int pipe1[2];
+int pipe2[2];
 
 int grab();
 int transform();
@@ -41,10 +40,16 @@ void getDisplayDimensions(int *p_display_width, int *p_display_height);
 
 int main(int argc, char *argv[])
 {
-    // Check for input parameters
 
-    a = pipe(pipe1);
-    b = pipe(pipe2);
+    if(pipe(pipe1) == -1) {
+        printf("Error while opening the pipe\n");
+        return 1;
+    }
+    if(pipe(pipe2) == -1) {
+        printf("Error while opening the pipe\n");
+        return 1;
+    }
+
     pid1 = fork();
 
     if (pid1 == 0)
@@ -75,13 +80,18 @@ int grab()
     int file_dest;
 
     int frame_width, frame_height;
-    unsigned long max_size = 0;
+    // unsigned long max_size = 0;
 
     char *buff;
-    ssize_t block_size, num_bytes_read, num_bytes_written;
+    ssize_t block_size, num_bytes_read;//, num_bytes_written;
 
     frame_width = FRAME_WIDTH_DEFAULT;
     frame_height = FRAME_HEIGHT_DEFAULT;
+
+    // Close unused pipe ends
+    close(pipe1[0]);
+    close(pipe2[0]);
+    close(pipe2[1]);
 
     // Check validity of source file
     file_src = open("/dev/video0", O_RDONLY);
@@ -121,25 +131,14 @@ int grab()
             }
         }
     }
-
-    free(buff);
-
-    // Close the files
-    if (close(file_src) == -1 || close(file_dest) == -1)
-    {
-        printf("Error during closing the files\n");
-        exit(8);
-    }
-
-    exit(0);
 }
 
 // Transform /////////////////////////////////////////////////
 int transform()
 {
     // File descriptors (file offset & status flags)
-    int file_src;
-    int file_dest;
+    // int file_src;
+    // int file_dest;
 
     char *frame_buff;
     char *disp_buff;
@@ -155,6 +154,11 @@ int transform()
     // use default frame dimensions
     frame_width = FRAME_WIDTH_DEFAULT;
     frame_height = FRAME_HEIGHT_DEFAULT;
+
+    // Close unused pipe ends
+    close(pipe1[1]);
+    close(pipe2[0]);
+
 
     // Get display dimensions
     getDisplayDimensions(&display_width, &display_height);
@@ -252,18 +256,24 @@ int display()
 {
 
     // File descriptors (file offset & status flags)
-    int file_src;
+    // int file_src;
     int file_dest;
 
-    int frame_width, frame_height;
+    // int frame_width, frame_height;
     int display_width, display_height;
 
     char *disp_buff;
     unsigned long display_size;
 
-    char *frame_buff;
-    unsigned long frame_size;
-    ssize_t num_bytes_read, num_bytes_written;
+    // char *frame_buff;
+    // unsigned long frame_size;
+    // ssize_t num_bytes_read, num_bytes_written;
+
+    // Close unused pipe ends
+    close(pipe1[0]);
+    close(pipe1[1]);
+    close(pipe2[1]);
+
 
     // Get display dimensions
     getDisplayDimensions(&display_width, &display_height);
