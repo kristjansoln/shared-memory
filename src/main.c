@@ -2,9 +2,6 @@
 
 Creates three processes, which take video feed from /dev/video0, transform it from RGB888 to RGB565 and feed it to screen buffer /dev/fb0.
 
-Usage (arguments in [] are optional):
-./pipe [display_width] [display_height]
-
 */
 
 #include <stdio.h>
@@ -26,13 +23,14 @@ Usage (arguments in [] are optional):
 #include <sys/fcntl.h>
 #include <sys/ioctl.h>
 
-// Semaphores
+// Shared memory
 #include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/sem.h>
+#include <sys/shm.h>
 
-#define FRAME_WIDTH_DEFAULT 640
-#define FRAME_HEIGHT_DEFAULT 480
+#define FRAME_WIDTH 640
+#define FRAME_HEIGHT 480
 #define SEM1_READ 0
 #define SEM1_WRITE 1
 #define SEM2_READ 2
@@ -43,6 +41,7 @@ int pipe1[2];
 int pipe2[2];
 
 int semID;
+int shm1ID;
 
 // Function definitions
 int grab();
@@ -69,10 +68,12 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    if(pipe(pipe1) == -1) {
-        printf("Error while opening the pipe\n");
-        return 1;
+    // Initialize shared memory
+    shm1ID = shmget(IPC_PRIVATE, FRAME_HEIGHT*FRAME_WIDTH*3, 0600);
+    if(shm1ID == -1) {
+        printf("shmget error\n");
     }
+
     if(pipe(pipe2) == -1) {
         printf("Error while opening the pipe\n");
         return 1;
@@ -103,13 +104,13 @@ int main(int argc, char *argv[])
 int grab()
 {
     int file_src;
-    int frame_width, frame_height;
-
+    char *shm1;
     char *buff;
-    ssize_t block_size, num_bytes_read;
+
+    int frame_width, frame_height;
+    ssize_t frame_size;
 
     // Close unused pipe ends
-    close(pipe1[0]);
     close(pipe2[0]);
     close(pipe2[1]);
 
@@ -120,11 +121,18 @@ int grab()
         exit(2);
     }
 
-    frame_width = FRAME_WIDTH_DEFAULT;
-    frame_height = FRAME_HEIGHT_DEFAULT;
-    block_size = frame_width * frame_height * 3;
+    // Attach shared memory
+    shm1 = (char*) shmat(shm1ID, NULL, 0);
+    if(shm1 == (char*)-1) {
+        printf("shmat error\n");
+        exit(2);
+    }
 
-    if ((buff = (char *)malloc(block_size)) == NULL)
+    frame_width = FRAME_WIDTH;
+    frame_height = FRAME_HEIGHT;
+    frame_size = frame_width * frame_height * 3;  // ker je 24bpp
+
+    if ((buff = (char *)malloc(frame_size)) == NULL)
     {
         printf("Error during memory allocation\n");
         exit(5);
@@ -133,26 +141,16 @@ int grab()
     while (1)
     {
         // Read from video0
-        num_bytes_read = read(file_src, buff, block_size);
+        ssize_t num_bytes_read = read(file_src, buff, frame_size);
         if (num_bytes_read == -1)
         {
             printf("Error during read\n");
             exit(6);
         }
 
-        semaphoreLock(semID, SEM1_WRITE);
-
         // Write to shared memory
-        // for (int i = 0; i < block_size; i += frame_width * 3)
-        // {
-        //     ssize_t blockWritten = write(pipe1[1], &buff[i], frame_width * 3);
-        //     if (blockWritten == -1)
-        //     {
-        //         printf("Error during write\n");
-        //         exit(5);
-        //     }
-        // }
-        printf("Grab-debug: Quazi writing from video0 to pipe1[1]\n");
+        semaphoreLock(semID, SEM1_WRITE);
+        memcpy(shm1, buff, frame_size);
         semaphoreUnlock(semID, SEM1_READ);
     }
 }
@@ -162,6 +160,7 @@ int transform()
 {
     char *frame_buff;
     char *disp_buff;
+    char* shm1;
 
     int frame_width, frame_height;
     int display_width, display_height;
@@ -171,12 +170,18 @@ int transform()
     char r, g, b;
     unsigned short short_px;
 
-    frame_width = FRAME_WIDTH_DEFAULT;
-    frame_height = FRAME_HEIGHT_DEFAULT;
+    frame_width = FRAME_WIDTH;
+    frame_height = FRAME_HEIGHT;
 
     // Close unused pipe ends
-    close(pipe1[1]);
     close(pipe2[0]);
+
+    // Attach shared memory
+    shm1 = (char*) shmat(shm1ID, NULL, 0);
+    if(shm1 == (char*)-1) {
+        printf("shmat error\n");
+        exit(2);
+    }
 
     getDisplayDimensions(&display_width, &display_height);
 
@@ -197,19 +202,9 @@ int transform()
 
     while (1)
     {
-        semaphoreLock(semID, SEM1_READ);
-
         // Read from shared memory
-        // for (int i = 0; i <= frame_size - 1; i += frame_width * 3)
-        // {
-        //     ssize_t blockRead = read(pipe1[0], &frame_buff[i], frame_width * 3);
-        //     if (blockRead == -1)
-        //     {
-        //         printf("Error during read\n");
-        //         exit(5);
-        //     }
-        // }
-        printf("Transform-debug: Quazi reading from pipe1[0]\n");
+        semaphoreLock(semID, SEM1_READ);
+        memcpy(frame_buff, shm1, frame_size);
         semaphoreUnlock(semID, SEM1_WRITE);
 
         // Transform and copy input image to display buffer and create borders
@@ -372,7 +367,6 @@ void getDisplayDimensions(int *p_display_width, int *p_display_height)
     return;
 }
 
-// Lock
 void semaphoreLock(int semID, unsigned short semIndex) {
     struct sembuf semaphore;
 
