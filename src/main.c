@@ -15,6 +15,7 @@ Creates three processes, which take video feed from /dev/video0, transform it fr
 #include <math.h>
 #include <stdbool.h>
 #include <limits.h>
+#include <time.h>
 
 // For determining display size
 #include <string.h>
@@ -51,6 +52,12 @@ pid_t pid1, pid2;
 int semID;
 int shm1ID;
 int shm2ID;
+
+// Debug: measure execution time
+int grab_frame_counter = 0;
+int display_frame_counter = 0;
+clock_t start, end;
+double execution_time;
 
 // Function definitions
 int grab();
@@ -150,6 +157,13 @@ int grab()
 
     while (1)
     {
+        // Debug: Measure execution time
+        if (grab_frame_counter == 0)
+        {
+            grab_frame_counter++;
+            start = clock();
+        }
+
         // Read from video0
         ssize_t num_bytes_read = read(file_src, buff, frame_size);
         if (num_bytes_read == -1)
@@ -300,10 +314,21 @@ int display()
 
         // Write to fb0
         ssize_t blockWritten = write(file_dest, disp_buff, display_size);
+        fflush(stdout);
         if (blockWritten == -1)
         {
             printf("display: Error during write\n");
             exit(ERR_FILEWRITE);
+        }
+
+        // Debug: measure execution time
+        if (display_frame_counter == 0)
+        {
+            display_frame_counter++;
+            end = clock();
+            execution_time = (double)(end - start) / (CLOCKS_PER_SEC);
+            printf("Debug: Execution of a single frame took approximately %le seconds (%ld clock cycles)\n", execution_time, end - start);
+            fflush(stdout);
         }
     }
 }
