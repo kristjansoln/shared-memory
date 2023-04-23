@@ -26,20 +26,48 @@ Usage (arguments in [] are optional):
 #include <sys/fcntl.h>
 #include <sys/ioctl.h>
 
+// Semaphores
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/sem.h>
+
 #define FRAME_WIDTH_DEFAULT 640
 #define FRAME_HEIGHT_DEFAULT 480
+#define SEM1_READ 0
+#define SEM1_WRITE 1
+#define SEM2_READ 2
+#define SEM2_WRITE 3
 
 pid_t pid1, pid2;
 int pipe1[2];
 int pipe2[2];
 
+int semID;
+
+// Function definitions
 int grab();
 int transform();
 int display();
 void getDisplayDimensions(int *p_display_width, int *p_display_height);
+void semaphoreLock(int semId, unsigned short semNum);
+void semaphoreUnlock(int semId, unsigned short semNum);
+
 
 int main(int argc, char *argv[])
 {
+    // Initialize semaphores for write first
+    semID = semget(IPC_PRIVATE, 2, 0644);
+    if (semID == -1) {
+        perror("semget error\n");
+        exit(1);
+    }
+    unsigned short semArray[2];
+    semArray[SEM1_READ] = 0;
+    semArray[SEM1_WRITE] = 1;
+    if(semctl(semID, 0, SETALL, semArray) == -1) {
+        printf("%s: semaphore initialization error\n", argv[0]);
+        exit(1);
+    }
 
     if(pipe(pipe1) == -1) {
         printf("Error while opening the pipe\n");
@@ -74,36 +102,28 @@ int main(int argc, char *argv[])
 // Grab //////////////////////////////////////////////////////
 int grab()
 {
-
-    // File descriptors (file offset & status flags)
     int file_src;
-    int file_dest;
-
     int frame_width, frame_height;
-    // unsigned long max_size = 0;
 
     char *buff;
-    ssize_t block_size, num_bytes_read;//, num_bytes_written;
-
-    frame_width = FRAME_WIDTH_DEFAULT;
-    frame_height = FRAME_HEIGHT_DEFAULT;
+    ssize_t block_size, num_bytes_read;
 
     // Close unused pipe ends
     close(pipe1[0]);
     close(pipe2[0]);
     close(pipe2[1]);
 
-    // Check validity of source file
     file_src = open("/dev/video0", O_RDONLY);
     if (file_src == -1)
-    { // If source file can't be opened (read)
+    {
         printf("Invalid source file\n");
         exit(2);
     }
 
+    frame_width = FRAME_WIDTH_DEFAULT;
+    frame_height = FRAME_HEIGHT_DEFAULT;
     block_size = frame_width * frame_height * 3;
 
-    // Try to allocate memory
     if ((buff = (char *)malloc(block_size)) == NULL)
     {
         printf("Error during memory allocation\n");
@@ -112,6 +132,7 @@ int grab()
 
     while (1)
     {
+        // Read from video0
         num_bytes_read = read(file_src, buff, block_size);
         if (num_bytes_read == -1)
         {
@@ -119,27 +140,26 @@ int grab()
             exit(6);
         }
 
-        for (int i = 0; i < block_size; i += frame_width * 3)
-        {
-            ssize_t blockWritten = write(pipe1[1], &buff[i], frame_width * 3);
-            // printf("Blockwritten: %ld\n", blockWritten);
-            // totalBytesWritten += blockWritten;
-            if (blockWritten == -1)
-            {
-                printf("Error during write\n");
-                exit(5);
-            }
-        }
+        semaphoreLock(semID, SEM1_WRITE);
+
+        // Write to shared memory
+        // for (int i = 0; i < block_size; i += frame_width * 3)
+        // {
+        //     ssize_t blockWritten = write(pipe1[1], &buff[i], frame_width * 3);
+        //     if (blockWritten == -1)
+        //     {
+        //         printf("Error during write\n");
+        //         exit(5);
+        //     }
+        // }
+        printf("Grab-debug: Quazi writing from video0 to pipe1[1]\n");
+        semaphoreUnlock(semID, SEM1_READ);
     }
 }
 
 // Transform /////////////////////////////////////////////////
 int transform()
 {
-    // File descriptors (file offset & status flags)
-    // int file_src;
-    // int file_dest;
-
     char *frame_buff;
     char *disp_buff;
 
@@ -151,7 +171,6 @@ int transform()
     char r, g, b;
     unsigned short short_px;
 
-    // use default frame dimensions
     frame_width = FRAME_WIDTH_DEFAULT;
     frame_height = FRAME_HEIGHT_DEFAULT;
 
@@ -159,18 +178,16 @@ int transform()
     close(pipe1[1]);
     close(pipe2[0]);
 
-
-    // Get display dimensions
     getDisplayDimensions(&display_width, &display_height);
 
-    // Allocate display buffer
+    // Display buffer
     display_size = display_width * display_height * 2; // *2, ker je 16bpp
     if ((disp_buff = (char *)malloc(display_size)) == NULL)
     {
         printf("Error during memory allocation\n");
         exit(6);
     }
-    // Allocate memory for image buffer
+    // Image buffer
     frame_size = frame_width * frame_height * 3; // *3, ker je 24bpp
     if ((frame_buff = (char *)malloc(frame_size)) == NULL)
     {
@@ -180,15 +197,20 @@ int transform()
 
     while (1)
     {
-        for (int i = 0; i <= frame_size - 1; i += frame_width * 3)
-        {
-            ssize_t blockRead = read(pipe1[0], &frame_buff[i], frame_width * 3);
-            if (blockRead == -1)
-            {
-                printf("Error during read\n");
-                exit(5);
-            }
-        }
+        semaphoreLock(semID, SEM1_READ);
+
+        // Read from shared memory
+        // for (int i = 0; i <= frame_size - 1; i += frame_width * 3)
+        // {
+        //     ssize_t blockRead = read(pipe1[0], &frame_buff[i], frame_width * 3);
+        //     if (blockRead == -1)
+        //     {
+        //         printf("Error during read\n");
+        //         exit(5);
+        //     }
+        // }
+        printf("Transform-debug: Quazi reading from pipe1[0]\n");
+        semaphoreUnlock(semID, SEM1_WRITE);
 
         // Transform and copy input image to display buffer and create borders
         unsigned long j = 0; // Image pointer
@@ -196,7 +218,6 @@ int transform()
         {
             // Go through every display pixel, not individual "channel"
             // Check if within width bounds
-
             if ((i % display_width) >= frame_width)
             {
                 disp_buff[2 * i] = 0;
@@ -241,7 +262,6 @@ int transform()
         for (int i = 0; i <= display_size - 1; i += display_width * 2)
         {
             ssize_t blockWritten = write(pipe2[1], &disp_buff[i], display_width * 2);
-            // printf("Blockwritten: %ld\n", blockWritten);
             if (blockWritten == -1)
             {
                 printf("Error during write\n");
@@ -349,5 +369,28 @@ void getDisplayDimensions(int *p_display_width, int *p_display_height)
 
     // close file
     close(fbfd);
+    return;
+}
+
+// Lock
+void semaphoreLock(int semID, unsigned short semIndex) {
+    struct sembuf semaphore;
+
+    semaphore.sem_num = semIndex;
+    semaphore.sem_op = -1;
+    semaphore.sem_flg = 0;
+    semop(semID, &semaphore, 1);
+
+    return;
+}
+
+void semaphoreUnlock(int semID, unsigned short semIndex) {
+    struct sembuf semaphore;
+
+    semaphore.sem_num = semIndex;
+    semaphore.sem_op = +1;
+    semaphore.sem_flg = 0;
+    semop(semID, &semaphore, 1);
+
     return;
 }
