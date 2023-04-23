@@ -36,6 +36,16 @@ Creates three processes, which take video feed from /dev/video0, transform it fr
 #define SEM2_READ 2
 #define SEM2_WRITE 3
 
+#define ERR_FILEWRITE 1
+#define ERR_FILEREAD 2
+#define ERR_MALLOC 3
+#define ERR_FILEOPEN 4
+#define ERR_SHMAT 5
+#define ERR_SHMGET 6
+#define ERR_SEMGET 7
+#define ERR_SEMCTL 8
+#define ERR_IOCTL 9
+
 pid_t pid1, pid2;
 
 int semID;
@@ -58,8 +68,8 @@ int main(int argc, char *argv[])
     semID = semget(IPC_PRIVATE, 2, 0644);
     if (semID == -1)
     {
-        perror("semget error\n");
-        exit(1);
+        printf("%s: Error during semget\n", argv[0]);
+        exit(ERR_SEMGET);
     }
     unsigned short semArray[4];
     semArray[SEM1_READ] = 0;
@@ -68,8 +78,8 @@ int main(int argc, char *argv[])
     semArray[SEM2_WRITE] = 1;
     if (semctl(semID, 0, SETALL, semArray) == -1)
     {
-        printf("%s: semaphore initialization error\n", argv[0]);
-        exit(1);
+        printf("%s: Semaphore initialization error\n", argv[0]);
+        exit(ERR_SEMCTL);
     }
 
     // Initialize shared memory
@@ -78,7 +88,8 @@ int main(int argc, char *argv[])
     shm2ID = shmget(IPC_PRIVATE, display_width * display_height * 2, 0600);
     if (shm1ID == -1 || shm2ID == -1)
     {
-        printf("shmget error\n");
+        printf("%s: Shared memory initialization error\n", argv[0]);
+        exit(ERR_SHMGET);
     }
 
     pid1 = fork();
@@ -115,16 +126,16 @@ int grab()
     file_src = open("/dev/video0", O_RDONLY);
     if (file_src == -1)
     {
-        printf("Invalid source file\n");
-        exit(2);
+        printf("grab: Invalid source file\n");
+        exit(ERR_FILEOPEN);
     }
 
     // Attach shared memory
     shm1 = (char *)shmat(shm1ID, NULL, 0);
     if (shm1 == (char *)-1)
     {
-        printf("shmat error\n");
-        exit(2);
+        printf("grab: Attach shared memory error\n");
+        exit(ERR_SHMAT);
     }
 
     frame_width = FRAME_WIDTH;
@@ -133,8 +144,8 @@ int grab()
 
     if ((buff = (char *)malloc(frame_size)) == NULL)
     {
-        printf("Error during memory allocation\n");
-        exit(5);
+        printf("grab: memory allocation error\n");
+        exit(ERR_MALLOC);
     }
 
     while (1)
@@ -143,8 +154,8 @@ int grab()
         ssize_t num_bytes_read = read(file_src, buff, frame_size);
         if (num_bytes_read == -1)
         {
-            printf("Grab: Error during read\n");
-            exit(6);
+            printf("grab: read error\n");
+            exit(ERR_FILEREAD);
         }
         // Write to shared memory
         semaphoreLock(semID, SEM1_WRITE);
@@ -174,8 +185,8 @@ int transform()
     shm2 = (char *)shmat(shm2ID, NULL, 0);
     if (shm1 == (char *)-1 || shm2 == (char *)-1)
     {
-        printf("shmat error\n");
-        exit(2);
+        printf("transform: shmat error\n");
+        exit(ERR_SHMAT);
     }
 
     // Display buffer
@@ -183,8 +194,8 @@ int transform()
     display_size = display_width * display_height * 2; // *2, ker je 16bpp
     if ((disp_buff = (char *)malloc(display_size)) == NULL)
     {
-        printf("Error during memory allocation\n");
-        exit(6);
+        printf("transform: memory allocation error\n");
+        exit(ERR_MALLOC);
     }
     // Image buffer
     frame_width = FRAME_WIDTH;
@@ -192,8 +203,8 @@ int transform()
     frame_size = frame_width * frame_height * 3; // *3, ker je 24bpp
     if ((frame_buff = (char *)malloc(frame_size)) == NULL)
     {
-        printf("Error during memory allocation\n");
-        exit(7);
+        printf("transform: memory allocation error\n");
+        exit(ERR_MALLOC);
     }
 
     while (1)
@@ -258,15 +269,15 @@ int display()
     shm2 = (char *)shmat(shm2ID, NULL, 0);
     if (shm2 == (char *)-1)
     {
-        printf("shmat error\n");
-        exit(2);
+        printf("display: attach shared memory error\n");
+        exit(ERR_SHMAT);
     }
 
     file_dest = open("/dev/fb0", O_RDWR);
     if (file_dest == -1)
     {
-        printf("Invalid destination file\n");
-        exit(3);
+        printf("display: invalid destination file\n");
+        exit(ERR_FILEOPEN);
     }
 
     // Display buffer
@@ -274,8 +285,8 @@ int display()
     display_size = display_width * display_height * 2; // *2, ker je 16bpp
     if ((disp_buff = (char *)malloc(display_size)) == NULL)
     {
-        printf("Error during memory allocation\n");
-        exit(5);
+        printf("display: memory allocation error\n");
+        exit(ERR_MALLOC);
     }
 
     while (1)
@@ -291,8 +302,8 @@ int display()
         ssize_t blockWritten = write(file_dest, disp_buff, display_size);
         if (blockWritten == -1)
         {
-            printf("Display: Error during write\n");
-            exit(5);
+            printf("display: Error during write\n");
+            exit(ERR_FILEWRITE);
         }
     }
 }
@@ -313,8 +324,8 @@ void getDisplayDimensions(int *p_display_width, int *p_display_height)
     // Get variable screen information
     if (ioctl(fbfd, FBIOGET_VSCREENINFO, &var_info))
     {
-        printf("Error reading variable screen info.\n");
-        exit(1);
+        printf("getDisplayDimensions: reading variable screen info failed.\n");
+        exit(ERR_IOCTL);
     }
 
     *p_display_width = (int)(var_info.xres);
