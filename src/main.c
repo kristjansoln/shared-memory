@@ -171,6 +171,11 @@ int grab()
             printf("grab: read error\n");
             exit(ERR_FILEREAD);
         }
+        else if (num_bytes_read != frame_size)
+        {
+            printf("grab-warning: Read %ld bytes from video0, while frame size is %ld\n", num_bytes_read, frame_size);
+            fflush(stdout);
+        }
         // Write to shared memory
         semaphoreLock(semID, SEM1_WRITE);
         memcpy(shm1, buff, frame_size);
@@ -314,7 +319,11 @@ int display()
 
         // Write to fb0
         ssize_t blockWritten = write(file_dest, disp_buff, display_size);
-        fflush(stdout);
+        if(blockWritten != display_size) {
+            printf("grab-warning: Wrote %ld bytes to fb0, while display size is %lu\n", blockWritten, display_size);
+            fflush(stdout);
+        }
+
         if (blockWritten == -1)
         {
             printf("display: Error during write\n");
