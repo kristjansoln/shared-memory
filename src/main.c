@@ -2,9 +2,6 @@
 
 Creates three processes, which take video feed from /dev/video0, transform it from RGB888 to RGB565 and feed it to screen buffer /dev/fb0.
 
-Usage (arguments in [] are optional):
-./pipe [display_width] [display_height]
-
 */
 
 #include <stdio.h>
@@ -18,6 +15,7 @@ Usage (arguments in [] are optional):
 #include <math.h>
 #include <stdbool.h>
 #include <limits.h>
+#include <time.h>
 
 // For determining display size
 #include <string.h>
@@ -26,25 +24,81 @@ Usage (arguments in [] are optional):
 #include <sys/fcntl.h>
 #include <sys/ioctl.h>
 
+// Shared memory
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/sem.h>
+#include <sys/shm.h>
 
-#define FRAME_WIDTH_DEFAULT 640
-#define FRAME_HEIGHT_DEFAULT 480
+#define FRAME_WIDTH 640
+#define FRAME_HEIGHT 480
+#define SEM1_READ 0
+#define SEM1_WRITE 1
+#define SEM2_READ 2
+#define SEM2_WRITE 3
+
+#define ERR_FILEWRITE 1
+#define ERR_FILEREAD 2
+#define ERR_MALLOC 3
+#define ERR_FILEOPEN 4
+#define ERR_SHMAT 5
+#define ERR_SHMGET 6
+#define ERR_SEMGET 7
+#define ERR_SEMCTL 8
+#define ERR_IOCTL 9
 
 pid_t pid1, pid2;
-int pipe1[2], pipe2[2];
-int a, b;
 
+int semID;
+int shm1ID;
+int shm2ID;
+
+// Debug: measure execution time
+int grab_frame_counter = 0;
+int display_frame_counter = 0;
+clock_t start, end;
+double execution_time;
+
+// Function definitions
 int grab();
 int transform();
 int display();
 void getDisplayDimensions(int *p_display_width, int *p_display_height);
+void semaphoreLock(int semId, unsigned short semNum);
+void semaphoreUnlock(int semId, unsigned short semNum);
 
 int main(int argc, char *argv[])
 {
-    // Check for input parameters
+    int display_width, display_height;
 
-    a = pipe(pipe1);
-    b = pipe(pipe2);
+    // Initialize semaphores for write first
+    semID = semget(IPC_PRIVATE, 2, 0644);
+    if (semID == -1)
+    {
+        printf("%s: Error during semget\n", argv[0]);
+        exit(ERR_SEMGET);
+    }
+    unsigned short semArray[4];
+    semArray[SEM1_READ] = 0;
+    semArray[SEM1_WRITE] = 1;
+    semArray[SEM2_READ] = 0;
+    semArray[SEM2_WRITE] = 1;
+    if (semctl(semID, 0, SETALL, semArray) == -1)
+    {
+        printf("%s: Semaphore initialization error\n", argv[0]);
+        exit(ERR_SEMCTL);
+    }
+
+    // Initialize shared memory
+    getDisplayDimensions(&display_width, &display_height);
+    shm1ID = shmget(IPC_PRIVATE, FRAME_HEIGHT * FRAME_WIDTH * 3, 0600);
+    shm2ID = shmget(IPC_PRIVATE, display_width * display_height * 2, 0600);
+    if (shm1ID == -1 || shm2ID == -1)
+    {
+        printf("%s: Shared memory initialization error\n", argv[0]);
+        exit(ERR_SHMGET);
+    }
+
     pid1 = fork();
 
     if (pid1 == 0)
@@ -69,80 +123,73 @@ int main(int argc, char *argv[])
 // Grab //////////////////////////////////////////////////////
 int grab()
 {
-
-    // File descriptors (file offset & status flags)
     int file_src;
-    int file_dest;
+    char *shm1;
+    char *buff;
 
     int frame_width, frame_height;
-    unsigned long max_size = 0;
+    ssize_t frame_size;
 
-    char *buff;
-    ssize_t block_size, num_bytes_read, num_bytes_written;
-
-    frame_width = FRAME_WIDTH_DEFAULT;
-    frame_height = FRAME_HEIGHT_DEFAULT;
-
-    // Check validity of source file
     file_src = open("/dev/video0", O_RDONLY);
     if (file_src == -1)
-    { // If source file can't be opened (read)
-        printf("Invalid source file\n");
-        exit(2);
+    {
+        printf("grab: Invalid source file\n");
+        exit(ERR_FILEOPEN);
     }
 
-    block_size = frame_width * frame_height * 3;
-
-    // Try to allocate memory
-    if ((buff = (char *)malloc(block_size)) == NULL)
+    // Attach shared memory
+    shm1 = (char *)shmat(shm1ID, NULL, 0);
+    if (shm1 == (char *)-1)
     {
-        printf("Error during memory allocation\n");
-        exit(5);
+        printf("grab: Attach shared memory error\n");
+        exit(ERR_SHMAT);
+    }
+
+    frame_width = FRAME_WIDTH;
+    frame_height = FRAME_HEIGHT;
+    frame_size = frame_width * frame_height * 3; // ker je 24bpp
+
+    if ((buff = (char *)malloc(frame_size)) == NULL)
+    {
+        printf("grab: memory allocation error\n");
+        exit(ERR_MALLOC);
     }
 
     while (1)
     {
-        num_bytes_read = read(file_src, buff, block_size);
+        // Debug: Measure execution time
+        if (grab_frame_counter == 0)
+        {
+            grab_frame_counter++;
+            start = clock();
+        }
+
+        // Read from video0
+        ssize_t num_bytes_read = read(file_src, buff, frame_size);
         if (num_bytes_read == -1)
         {
-            printf("Error during read\n");
-            exit(6);
+            printf("grab: read error\n");
+            exit(ERR_FILEREAD);
         }
-
-        for (int i = 0; i < block_size; i += frame_width * 3)
+        else if (num_bytes_read != frame_size)
         {
-            ssize_t blockWritten = write(pipe1[1], &buff[i], frame_width * 3);
-            // printf("Blockwritten: %ld\n", blockWritten);
-            // totalBytesWritten += blockWritten;
-            if (blockWritten == -1)
-            {
-                printf("Error during write\n");
-                exit(5);
-            }
+            printf("grab-warning: Read %ld bytes from video0, while frame size is %ld\n", num_bytes_read, frame_size);
+            fflush(stdout);
         }
+        // Write to shared memory
+        semaphoreLock(semID, SEM1_WRITE);
+        memcpy(shm1, buff, frame_size);
+        semaphoreUnlock(semID, SEM1_READ);
     }
-
-    free(buff);
-
-    // Close the files
-    if (close(file_src) == -1 || close(file_dest) == -1)
-    {
-        printf("Error during closing the files\n");
-        exit(8);
-    }
-
-    exit(0);
 }
 
 // Transform /////////////////////////////////////////////////
 int transform()
 {
-    // File descriptors (file offset & status flags)
-    int file_src;
-    int file_dest;
-
     char *frame_buff;
     char *disp_buff;
+    char *shm1;
+    char *shm2;
 
     int frame_width, frame_height;
     int display_width, display_height;
@@ -152,39 +199,39 @@ int transform()
     char r, g, b;
     unsigned short short_px;
 
-    // use default frame dimensions
-    frame_width = FRAME_WIDTH_DEFAULT;
-    frame_height = FRAME_HEIGHT_DEFAULT;
+    // Attach shared memory
+    shm1 = (char *)shmat(shm1ID, NULL, 0);
+    shm2 = (char *)shmat(shm2ID, NULL, 0);
+    if (shm1 == (char *)-1 || shm2 == (char *)-1)
+    {
+        printf("transform: shmat error\n");
+        exit(ERR_SHMAT);
+    }
 
-    // Get display dimensions
+    // Display buffer
     getDisplayDimensions(&display_width, &display_height);
-
-    // Allocate display buffer
     display_size = display_width * display_height * 2; // *2, ker je 16bpp
     if ((disp_buff = (char *)malloc(display_size)) == NULL)
     {
-        printf("Error during memory allocation\n");
-        exit(6);
+        printf("transform: memory allocation error\n");
+        exit(ERR_MALLOC);
     }
-    // Allocate memory for image buffer
+    // Image buffer
+    frame_width = FRAME_WIDTH;
+    frame_height = FRAME_HEIGHT;
     frame_size = frame_width * frame_height * 3; // *3, ker je 24bpp
     if ((frame_buff = (char *)malloc(frame_size)) == NULL)
     {
-        printf("Error during memory allocation\n");
-        exit(7);
+        printf("transform: memory allocation error\n");
+        exit(ERR_MALLOC);
     }
 
     while (1)
     {
-        for (int i = 0; i <= frame_size - 1; i += frame_width * 3)
-        {
-            ssize_t blockRead = read(pipe1[0], &frame_buff[i], frame_width * 3);
-            if (blockRead == -1)
-            {
-                printf("Error during read\n");
-                exit(5);
-            }
-        }
+        // Read from shared memory
+        semaphoreLock(semID, SEM1_READ);
+        memcpy(frame_buff, shm1, frame_size);
+        semaphoreUnlock(semID, SEM1_WRITE);
 
         // Transform and copy input image to display buffer and create borders
         unsigned long j = 0; // Image pointer
@@ -192,14 +239,13 @@ int transform()
         {
             // Go through every display pixel, not individual "channel"
             // Check if within width bounds
-
             if ((i % display_width) >= frame_width)
             {
                 disp_buff[2 * i] = 0;
                 disp_buff[2 * i + 1] = 0;
             }
             // Check if within height bounds
-            else if ((i / display_width) > frame_height)
+            else if ((i / display_width) >= frame_height)
             {
                 disp_buff[2 * i] = 0;
                 disp_buff[2 * i + 1] = 0;
@@ -220,100 +266,82 @@ int transform()
                 // Write to output buffer
                 disp_buff[2 * i] = (short_px & 0xFF00) >> 8;
                 disp_buff[2 * i + 1] = short_px & 0x00FF;
-
-                // // Draw colors
-                // // Blue
-                // disp_buff[2 * i] = 0xF8;
-                // disp_buff[2 * i + 1] = 0x00;
-                // // Red
-                // disp_buff[2 * i] = 0x07;
-                // disp_buff[2 * i + 1] = 0xE0;
-                // Green
-                // disp_buff[2 * i] = 0x00;
-                // disp_buff[2 * i + 1] = 0x1F;
             }
         }
-
-        for (int i = 0; i <= display_size - 1; i += display_width * 2)
-        {
-            ssize_t blockWritten = write(pipe2[1], &disp_buff[i], display_width * 2);
-            // printf("Blockwritten: %ld\n", blockWritten);
-            if (blockWritten == -1)
-            {
-                printf("Error during write\n");
-                exit(5);
-            }
-        }
+        // Write to shared memory
+        semaphoreLock(semID, SEM2_WRITE);
+        memcpy(shm2, disp_buff, display_size);
+        semaphoreUnlock(semID, SEM2_READ);
     }
 }
 
 // Display ///////////////////////////////////////////////////
 int display()
 {
-
-    // File descriptors (file offset & status flags)
-    int file_src;
+    char *disp_buff;
+    char *shm2;
     int file_dest;
 
-    int frame_width, frame_height;
     int display_width, display_height;
-
-    char *disp_buff;
     unsigned long display_size;
 
-    char *frame_buff;
-    unsigned long frame_size;
-    ssize_t num_bytes_read, num_bytes_written;
+    shm2 = (char *)shmat(shm2ID, NULL, 0);
+    if (shm2 == (char *)-1)
+    {
+        printf("display: attach shared memory error\n");
+        exit(ERR_SHMAT);
+    }
 
-    // Get display dimensions
-    getDisplayDimensions(&display_width, &display_height);
-
-    // Open destination file
     file_dest = open("/dev/fb0", O_RDWR);
     if (file_dest == -1)
     {
-        printf("Invalid destination file\n");
-        exit(3);
+        printf("display: invalid destination file\n");
+        exit(ERR_FILEOPEN);
     }
 
-    // Allocate display buffer
+    // Display buffer
+    getDisplayDimensions(&display_width, &display_height);
     display_size = display_width * display_height * 2; // *2, ker je 16bpp
     if ((disp_buff = (char *)malloc(display_size)) == NULL)
     {
-        printf("Error during memory allocation\n");
-        exit(5);
+        printf("display: memory allocation error\n");
+        exit(ERR_MALLOC);
     }
 
     while (1)
     {
-        for (int i = 0; i < display_size - 1; i += display_width * 2)
-        {
-            ssize_t blockRead = read(pipe2[0], &disp_buff[i], display_width * 2);
-            // printf("Blockread: %ld\n", blockRead);
-            // totalBytesRead += blockRead;
-            // printf("i\n");
-            if (blockRead == -1)
-            {
-                printf("Error during read\n");
-                exit(5);
-            }
-        }
+        // Read from shared memory
+        semaphoreLock(semID, SEM2_READ);
+        memcpy(disp_buff, shm2, display_size);
+        semaphoreUnlock(semID, SEM2_WRITE);
 
         lseek(file_dest, 0, SEEK_SET);
 
-        for (int i = 0; i <= display_size - 1; i += display_width * 2)
+        // Write to fb0
+        ssize_t blockWritten = write(file_dest, disp_buff, display_size);
+        if(blockWritten != display_size) {
+            printf("grab-warning: Wrote %ld bytes to fb0, while display size is %lu\n", blockWritten, display_size);
+            fflush(stdout);
+        }
+
+        if (blockWritten == -1)
         {
-            ssize_t blockWritten = write(file_dest, &disp_buff[i], display_width * 2);
-            if (blockWritten == -1)
-            {
-                printf("Error during write\n");
-                exit(5);
-            }
+            printf("display: Error during write\n");
+            exit(ERR_FILEWRITE);
+        }
+
+        // Debug: measure execution time
+        if (display_frame_counter == 0)
+        {
+            display_frame_counter++;
+            end = clock();
+            execution_time = (double)(end - start) / (CLOCKS_PER_SEC);
+            printf("Debug: Execution of a single frame took approximately %le seconds (%ld clock cycles)\n", execution_time, end - start);
+            fflush(stdout);
         }
     }
 }
 
-// Other functions ///////////////////////////////////////////
 void getDisplayDimensions(int *p_display_width, int *p_display_height)
 {
     int fbfd = 0; // framebuffer filedescriptor
@@ -330,8 +358,8 @@ void getDisplayDimensions(int *p_display_width, int *p_display_height)
     // Get variable screen information
     if (ioctl(fbfd, FBIOGET_VSCREENINFO, &var_info))
     {
-        printf("Error reading variable screen info.\n");
-        exit(1);
+        printf("getDisplayDimensions: reading variable screen info failed.\n");
+        exit(ERR_IOCTL);
     }
 
     *p_display_width = (int)(var_info.xres);
@@ -339,5 +367,29 @@ void getDisplayDimensions(int *p_display_width, int *p_display_height)
 
     // close file
     close(fbfd);
+    return;
+}
+
+void semaphoreLock(int semID, unsigned short semIndex)
+{
+    struct sembuf semaphore;
+
+    semaphore.sem_num = semIndex;
+    semaphore.sem_op = -1;
+    semaphore.sem_flg = 0;
+    semop(semID, &semaphore, 1);
+
+    return;
+}
+
+void semaphoreUnlock(int semID, unsigned short semIndex)
+{
+    struct sembuf semaphore;
+
+    semaphore.sem_num = semIndex;
+    semaphore.sem_op = +1;
+    semaphore.sem_flg = 0;
+    semop(semID, &semaphore, 1);
+
     return;
 }
