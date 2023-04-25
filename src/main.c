@@ -245,7 +245,7 @@ int transform()
                 disp_buff[2 * i + 1] = 0;
             }
             // Check if within height bounds
-            else if ((i / display_width) > frame_height)
+            else if ((i / display_width) >= frame_height)
             {
                 disp_buff[2 * i] = 0;
                 disp_buff[2 * i + 1] = 0;
