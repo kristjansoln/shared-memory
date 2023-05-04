@@ -330,11 +330,14 @@ int display()
         semaphoreUnlock(semID, SEM2_WRITE);
 
         // Debug: measure execution time
-        if (display_frame_counter == 0)
-        {
+        if (display_frame_counter < 1000) {
             display_frame_counter++;
+        }
+        else if (display_frame_counter == 1000)
+        {
+            display_frame_counter++; // Final increment
             end = clock();
-            execution_time = (double)(end - start) / (CLOCKS_PER_SEC);
+            execution_time = (double)(end - start) / (1000*CLOCKS_PER_SEC);
             printf("Debug: Execution of a single frame took approximately %le seconds (%ld clock cycles)\n", execution_time, end - start);
             fflush(stdout);
         }
